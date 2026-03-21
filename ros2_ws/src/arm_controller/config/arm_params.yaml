@@ -1,0 +1,10 @@
+arm_controller_node:
+  ros__parameters:
+    servo_arm_pin: 13
+    servo_gripper_pin: 12
+    servo_min_angle: 0
+    servo_max_angle: 180
+    arm_up_angle: 180
+    arm_down_angle: 0
+    gripper_open_angle: 180
+    gripper_closed_angle: 0

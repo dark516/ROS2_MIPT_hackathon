@@ -1,8 +1,6 @@
 from setuptools import find_packages, setup
-import os
-from glob import glob
 
-package_name = 'simple_sim'
+package_name = 'ros2_arduino_bridge'
 
 setup(
     name=package_name,
@@ -12,23 +10,25 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'pyserial~=3.5',
+        'pytest~=8.3.2',
+        'pyserial',
+        'typing',
+    ],
     zip_safe=True,
-    maintainer='dark516',
+    maintainer='Alex Kulagin',
     maintainer_email='sashakulagin2007@gmail.com',
-    description='TODO: Package description',
+    description='ros2 node to contact with arduino',
     license='TODO: License declaration',
     extras_require={
-        'test': [
-            'pytest',
-        ],
+        'test': ['pytest'],
     },
     entry_points={
-        'console_scripts': [
-            'simple_sim_node = simple_sim.simple_sim_node:main',
-            'path_follower = simple_sim.follower_node:main'
+    'console_scripts': [
+        'arduino_bridge = ros2_arduino_bridge.arduino_bridge:main',
         ],
     },
 )

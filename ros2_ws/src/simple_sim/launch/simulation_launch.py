@@ -17,9 +17,15 @@ def generate_launch_description():
             parameters=[{'inflation_radius': 0.25, 'resolution': 0.05}]
         ),
         Node(
-            package='path_follower',
-            executable='follower_node',
+            package='simple_sim',
+            executable='path_follower',
             name='path_follower',
+            output='screen'
+        ),
+        Node(
+            package='behaviour_server',
+            executable='behaviour_server_node',
+            name='behaviour',
             output='screen'
         )
     ])
