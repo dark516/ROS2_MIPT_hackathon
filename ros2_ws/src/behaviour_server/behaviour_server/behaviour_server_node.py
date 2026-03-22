@@ -9,6 +9,7 @@ import math
 ENEMY_SAFETY_DISTANCE = 0.35
 BACKUP_SPEED = -0.7      # Скорость движения назад (м/с). Настрой под своего робота.
 BACKUP_DURATION = 2.0    # Время движения назад (сек)
+GOAL_REACHED_RADIUS = 100.0 # Радиус достижения цели (в твоих единицах / пикселях)
 
 class BehaviourServer(Node):
     def __init__(self):
@@ -17,7 +18,7 @@ class BehaviourServer(Node):
         # Publishers
         self.arm_pub = self.create_publisher(Bool, '/robot/arm', 10)
         self.goal_pub = self.create_publisher(Pose2D, '/goal', 10)
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10) # Добавлен паблишер скорости
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         
         # Subscribers
         self.robot_pose_sub = self.create_subscription(Pose2D, '/robot/pose', self.robot_pose_callback, 10)
@@ -25,18 +26,15 @@ class BehaviourServer(Node):
         self.enemy_pose_sub = self.create_subscription(Pose2D, '/enemy/pose', self.enemy_pose_callback, 10)
         self.base_pose_sub = self.create_subscription(Pose2D, '/base', self.base_pose_callback, 10)
         
-        # Подписчик на статус достижения цели
-        self.goal_reached_sub = self.create_subscription(Bool, '/goal_reached', self.goal_reached_callback, 10)
-        
         # Переменные состояния
         self.current_robot_pose = None
         self.current_obstacles = []
         self.enemy_pose = None
         self.base_pose = None
         
-        # События от фолловера
-        self.has_new_goal_event = False
-        self.last_goal_event_value = False
+        # Координаты текущей цели для проверки доезда
+        self.target_x = None
+        self.target_y = None
         
         # State Machine
         self.sm_state = "INIT"
@@ -59,11 +57,6 @@ class BehaviourServer(Node):
     def base_pose_callback(self, msg):
         self.base_pose = msg
 
-    def goal_reached_callback(self, msg):
-        # Просто фиксируем последнее пришедшее сообщение
-        self.last_goal_event_value = msg.data
-        self.has_new_goal_event = True
-
     def find_nearest_object(self):
         if not self.current_robot_pose or not self.current_obstacles:
             return None
@@ -84,6 +77,13 @@ class BehaviourServer(Node):
             return False
         dist = math.hypot(self.current_robot_pose.x - self.enemy_pose.x, self.current_robot_pose.y - self.enemy_pose.y)
         return dist < ENEMY_SAFETY_DISTANCE
+
+    def is_target_reached(self):
+        """Проверяет, находится ли робот в радиусе GOAL_REACHED_RADIUS от текущей цели."""
+        if not self.current_robot_pose or self.target_x is None or self.target_y is None:
+            return False
+        dist = math.hypot(self.current_robot_pose.x - self.target_x, self.current_robot_pose.y - self.target_y)
+        return dist <= GOAL_REACHED_RADIUS
 
     def state_machine_loop(self):
         if not self.current_robot_pose:
@@ -106,11 +106,12 @@ class BehaviourServer(Node):
             if nearest_obj:
                 self.get_logger().info(f"Нашел объект: x={nearest_obj['x']:.2f}, y={nearest_obj['y']:.2f}")
                 
-                # Очищаем очередь событий перед отправкой команды
-                self.has_new_goal_event = False
+                # Запоминаем цель для проверки доезда
+                self.target_x = nearest_obj['x']
+                self.target_y = nearest_obj['y']
                 
                 # Отправляем цель
-                goal_msg = Pose2D(x=nearest_obj['x'], y=nearest_obj['y'], theta=0.0)
+                goal_msg = Pose2D(x=self.target_x, y=self.target_y, theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
                 # Сразу переходим в режим ожидания прибытия на место
@@ -120,9 +121,8 @@ class BehaviourServer(Node):
                 self.get_logger().info("Объекты не найдены. Жду...", throttle_duration_sec=3.0)
 
         elif self.sm_state == "MOVING_TO_OBJ":
-            # Ждем ТОЛЬКО True (фолловер приехал на место)
-            if self.has_new_goal_event and self.last_goal_event_value:
-                self.has_new_goal_event = False # Сбрасываем событие
+            # Проверяем расстояние до сохраненной цели
+            if self.is_target_reached():
                 self.get_logger().info("Доехал до объекта. Хватаю!")
                 self.arm_pub.publish(Bool(data=False)) # Схватить (закрыть манипулятор)
                 self.wait_start_time = self.get_clock().now()
@@ -138,11 +138,12 @@ class BehaviourServer(Node):
                 
                 self.get_logger().info(f"Объект схвачен. Везем на базу ({self.base_pose.x:.2f}, {self.base_pose.y:.2f}).")
                 
-                # Очищаем очередь событий перед отправкой команды
-                self.has_new_goal_event = False
+                # Обновляем целевые координаты на координаты базы
+                self.target_x = self.base_pose.x
+                self.target_y = self.base_pose.y
                 
                 # Отправляем цель на базу
-                goal_msg = Pose2D(x=self.base_pose.x, y=self.base_pose.y, theta=0.0)
+                goal_msg = Pose2D(x=self.target_x, y=self.target_y, theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
                 # Сразу переходим в режим ожидания прибытия на базу
@@ -150,9 +151,8 @@ class BehaviourServer(Node):
                 self.sm_state = "MOVING_TO_BASE"
 
         elif self.sm_state == "MOVING_TO_BASE":
-            # Ждем ТОЛЬКО True (фолловер приехал на место)
-            if self.has_new_goal_event and self.last_goal_event_value:
-                self.has_new_goal_event = False
+            # Проверяем расстояние до базы
+            if self.is_target_reached():
                 self.get_logger().info("Прибыл на базу. Выбрасываю объект!")
                 self.arm_pub.publish(Bool(data=True)) # Бросить (открыть манипулятор)
                 self.wait_start_time = self.get_clock().now()
@@ -167,7 +167,7 @@ class BehaviourServer(Node):
                 self.sm_state = "BACKING_UP"
 
         elif self.sm_state == "BACKING_UP":
-            # Едем назад в течение 1 секунды
+            # Едем назад в течение BACKUP_DURATION секунд
             elapsed = (self.get_clock().now() - self.wait_start_time).nanoseconds / 1e9
             twist_msg = Twist()
             
@@ -179,8 +179,9 @@ class BehaviourServer(Node):
                 twist_msg.linear.x = 0.0
                 self.cmd_vel_pub.publish(twist_msg)
                 self.get_logger().info("Отъезд завершен. Готов к следующему объекту.")
+                self.target_x = None # Очищаем цель
+                self.target_y = None
                 self.sm_state = "SEARCHING" # Возвращаемся к поиску
-
 
 def main(args=None):
     rclpy.init(args=args)

@@ -88,7 +88,7 @@ class PathFollowerPIDNode(Node):
                 ('max_yaw_rate', 50.0),  # degrees/s
                 ('base_linear_speed', 0.6),
                 ('lookahead_distance', 15.0),
-                ('goal_tolerance', 100.0),  # увеличил tolerance
+                ('goal_tolerance', 50.0),  # увеличил tolerance
                 ('yaw_tolerance', 5.0),  # degrees
                 ('dt', 0.1)  # уменьшил для более частого обновления
             ]
