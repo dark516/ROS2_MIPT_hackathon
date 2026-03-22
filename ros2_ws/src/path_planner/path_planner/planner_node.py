@@ -35,9 +35,9 @@ class PathPlanner(Node):
         # --- Parameters ---
         self.declare_parameter('resolution', 20.0) # Размер клетки сетки в пикселях
         self.declare_parameter('inflation_radius', 50.0)
-        self.declare_parameter('robot_radius', 75.0)
-        self.declare_parameter('enemy_radius', 75.0)
-        self.declare_parameter('gripper_offset', 170.0)
+        self.declare_parameter('robot_radius', 1)
+        self.declare_parameter('enemy_radius', 1)
+        self.declare_parameter('gripper_offset', 100.0)
 
         self.resolution = self.get_parameter('resolution').value
         self.inflation_radius = self.get_parameter('inflation_radius').value

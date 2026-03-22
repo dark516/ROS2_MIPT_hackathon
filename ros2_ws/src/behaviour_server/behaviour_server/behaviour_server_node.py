@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose2D, PoseArray
+from geometry_msgs.msg import Pose2D, PoseArray, Twist
 from std_msgs.msg import Bool
 import math
 
 # Константы
 ENEMY_SAFETY_DISTANCE = 0.35
+BACKUP_SPEED = -0.7      # Скорость движения назад (м/с). Настрой под своего робота.
+BACKUP_DURATION = 2.0    # Время движения назад (сек)
 
 class BehaviourServer(Node):
     def __init__(self):
@@ -15,6 +17,7 @@ class BehaviourServer(Node):
         # Publishers
         self.arm_pub = self.create_publisher(Bool, '/robot/arm', 10)
         self.goal_pub = self.create_publisher(Pose2D, '/goal', 10)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10) # Добавлен паблишер скорости
         
         # Subscribers
         self.robot_pose_sub = self.create_subscription(Pose2D, '/robot/pose', self.robot_pose_callback, 10)
@@ -110,17 +113,11 @@ class BehaviourServer(Node):
                 goal_msg = Pose2D(x=nearest_obj['x'], y=nearest_obj['y'], theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
-                # Переходим в режим ОЖИДАНИЯ ПУТИ
-                self.sm_state = "WAIT_PATH_OBJ"
+                # Сразу переходим в режим ожидания прибытия на место
+                self.get_logger().info("Едем до объекта!")
+                self.sm_state = "MOVING_TO_OBJ"
             else:
                 self.get_logger().info("Объекты не найдены. Жду...", throttle_duration_sec=3.0)
-
-        elif self.sm_state == "WAIT_PATH_OBJ":
-            # Ждем ТОЛЬКО False (фолловер получил путь и начал движение)
-            if self.has_new_goal_event and not self.last_goal_event_value:
-                self.has_new_goal_event = False # Сбрасываем событие
-                self.get_logger().info("Путь до объекта построен. Едем!")
-                self.sm_state = "MOVING_TO_OBJ"
 
         elif self.sm_state == "MOVING_TO_OBJ":
             # Ждем ТОЛЬКО True (фолловер приехал на место)
@@ -148,18 +145,12 @@ class BehaviourServer(Node):
                 goal_msg = Pose2D(x=self.base_pose.x, y=self.base_pose.y, theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
-                # Переходим в режим ОЖИДАНИЯ ПУТИ
-                self.sm_state = "WAIT_PATH_BASE"
-
-        elif self.sm_state == "WAIT_PATH_BASE":
-            # Ждем ТОЛЬКО False
-            if self.has_new_goal_event and not self.last_goal_event_value:
-                self.has_new_goal_event = False
-                self.get_logger().info("Путь до базы построен. Едем!")
+                # Сразу переходим в режим ожидания прибытия на базу
+                self.get_logger().info("Едем до базы!")
                 self.sm_state = "MOVING_TO_BASE"
 
         elif self.sm_state == "MOVING_TO_BASE":
-            # Ждем ТОЛЬКО True
+            # Ждем ТОЛЬКО True (фолловер приехал на место)
             if self.has_new_goal_event and self.last_goal_event_value:
                 self.has_new_goal_event = False
                 self.get_logger().info("Прибыл на базу. Выбрасываю объект!")
@@ -168,11 +159,28 @@ class BehaviourServer(Node):
                 self.sm_state = "DROPPING"
 
         elif self.sm_state == "DROPPING":
-            # Ждем полсекунды
+            # Ждем полсекунды, чтобы манипулятор успел открыться
             elapsed = (self.get_clock().now() - self.wait_start_time).nanoseconds / 1e9
             if elapsed >= 0.5:
-                self.get_logger().info("Готов к следующему объекту.")
-                self.sm_state = "SEARCHING" # Возвращаемся в начало цикла
+                self.get_logger().info("Отпускание завершено. Отъезжаем назад...")
+                self.wait_start_time = self.get_clock().now() # Сбрасываем таймер для отъезда
+                self.sm_state = "BACKING_UP"
+
+        elif self.sm_state == "BACKING_UP":
+            # Едем назад в течение 1 секунды
+            elapsed = (self.get_clock().now() - self.wait_start_time).nanoseconds / 1e9
+            twist_msg = Twist()
+            
+            if elapsed < BACKUP_DURATION:
+                twist_msg.linear.x = BACKUP_SPEED
+                self.cmd_vel_pub.publish(twist_msg)
+            else:
+                # Время вышло, останавливаем робота
+                twist_msg.linear.x = 0.0
+                self.cmd_vel_pub.publish(twist_msg)
+                self.get_logger().info("Отъезд завершен. Готов к следующему объекту.")
+                self.sm_state = "SEARCHING" # Возвращаемся к поиску
+
 
 def main(args=None):
     rclpy.init(args=args)

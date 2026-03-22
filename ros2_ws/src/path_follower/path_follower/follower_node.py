@@ -24,11 +24,11 @@ class FollowerConfig:
         self.max_yaw_rate = 50.0 * math.pi / 180.0
 
         # Linear motion
-        self.base_linear_speed = 0.4
+        self.base_linear_speed = 0.6
 
         # Lookahead & stopping
-        self.lookahead_distance = 20      # точка «вперёд» на пути
-        self.goal_tolerance = 25         # увеличил для практичности [m]
+        self.lookahead_distance = 10      # точка «вперёд» на пути
+        self.goal_tolerance = 50         # увеличил для практичности [m]
         self.yaw_tolerance = math.radians(8)  # [rad]
 
 
@@ -86,9 +86,9 @@ class PathFollowerPIDNode(Node):
                 ('ki_angular', -0.05),
                 ('kd_angular', -0.2),
                 ('max_yaw_rate', 50.0),  # degrees/s
-                ('base_linear_speed', 0.3),
+                ('base_linear_speed', 0.6),
                 ('lookahead_distance', 15.0),
-                ('goal_tolerance', 30.0),  # увеличил tolerance
+                ('goal_tolerance', 100.0),  # увеличил tolerance
                 ('yaw_tolerance', 5.0),  # degrees
                 ('dt', 0.1)  # уменьшил для более частого обновления
             ]
