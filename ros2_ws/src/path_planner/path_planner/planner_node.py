@@ -3,7 +3,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose2D, PoseArray, PoseStamped
 from nav_msgs.msg import Path
-from std_msgs.msg import Header, String
+from std_msgs.msg import Header
 import math
 import heapq
 
@@ -33,26 +33,23 @@ class PathPlanner(Node):
         super().__init__('path_planner')
         
         # --- Parameters ---
-        self.declare_parameter('resolution', 0.05)
-        self.declare_parameter('inflation_radius', 0.20)
-        self.declare_parameter('robot_radius', 0.15)
-        self.declare_parameter('enemy_radius', 0.20)
-        self.declare_parameter('gripper_offset', 0.05)
-        
-        # Рекомендую попробовать 0.10, если локальный контроллер будет останавливаться чуть раньше
-        self.declare_parameter('goal_tolerance', 0.10) 
+        self.declare_parameter('resolution', 20.0) # Размер клетки сетки в пикселях
+        self.declare_parameter('inflation_radius', 50.0)
+        self.declare_parameter('robot_radius', 75.0)
+        self.declare_parameter('enemy_radius', 75.0)
+        self.declare_parameter('gripper_offset', 170.0)
 
         self.resolution = self.get_parameter('resolution').value
         self.inflation_radius = self.get_parameter('inflation_radius').value
         self.robot_radius = self.get_parameter('robot_radius').value
         self.enemy_radius = self.get_parameter('enemy_radius').value
         self.gripper_offset = self.get_parameter('gripper_offset').value
-        self.goal_tolerance = self.get_parameter('goal_tolerance').value
         
-        self.width_m = 1.25
-        self.height_m = 1.75
-        self.grid_w = int(self.width_m / self.resolution) + 1
-        self.grid_h = int(self.height_m / self.resolution) + 1
+        # Размеры поля в пикселях/мм
+        self.width_px = 1280.0
+        self.height_px = 720.0
+        self.grid_w = int(self.width_px / self.resolution) + 1
+        self.grid_h = int(self.height_px / self.resolution) + 1
         
         # --- State ---
         self.current_pose = None
@@ -72,11 +69,10 @@ class PathPlanner(Node):
         self.sub_enemy = self.create_subscription(Pose2D, '/enemy/pose', self.enemy_cb, 10)
         
         self.pub_path = self.create_publisher(Path, '/path', 10)
-        self.pub_state = self.create_publisher(String, '/state', 10)
         
         # --- Loop ---
         self.timer = self.create_timer(0.2, self.plan_loop) 
-        self.get_logger().info("Path Planner Started. Goal synchronization fixed.")
+        self.get_logger().info("Path Planner Started. Pure planning mode.")
 
     def pose_cb(self, msg): 
         self.current_pose = msg
@@ -116,8 +112,9 @@ class PathPlanner(Node):
             
         wx, wy = self.grid_to_world(gx, gy)
         
-        if wx < self.robot_radius or wx > self.width_m - self.robot_radius or \
-           wy < self.robot_radius or wy > self.height_m - self.robot_radius:
+        # Проверка границ поля с учетом радиуса
+        if wx < self.robot_radius or wx > self.width_px - self.robot_radius or \
+           wy < self.robot_radius or wy > self.height_px - self.robot_radius:
             return False, 0.0
             
         penalty = 0.0
@@ -128,20 +125,20 @@ class PathPlanner(Node):
             
             if dist <= min_dist:
                 penalty += 1000.0 
-            elif dist < min_dist + 0.3:
-                penalty += (min_dist + 0.3 - dist) * 50.0
+            elif dist < min_dist + 300.0: # 300 пикселей зона плавного отталкивания
+                penalty += (min_dist + 300.0 - dist) * 5.0
                 
         for obs in self.obstacles:
             if self.goal_pose:
                 dist_to_goal = math.hypot(obs.position.x - self.goal_pose.x, obs.position.y - self.goal_pose.y)
-                if dist_to_goal <= 0.03:
+                if dist_to_goal <= 30.0: # Игнорируем препятствие, если это сама цель (30 пикселей)
                     continue
                     
             dist = math.hypot(wx - obs.position.x, wy - obs.position.y)
-            if dist < self.robot_radius + 0.02: 
+            if dist < self.robot_radius + 5.0:  # 5 пикселей - минимальный зазор
                 return False, 0.0 
             elif dist < self.robot_radius + self.inflation_radius:
-                penalty += (self.robot_radius + self.inflation_radius - dist) * 20.0 
+                penalty += (self.robot_radius + self.inflation_radius - dist) * 2.0 
                 
         return True, penalty
 
@@ -162,7 +159,7 @@ class PathPlanner(Node):
     def find_nearest_valid_goal(self, goal_gx, goal_gy):
         queue = [(goal_gx, goal_gy)]
         visited = set([(goal_gx, goal_gy)])
-        max_search_radius = int(0.5 / self.resolution) 
+        max_search_radius = int(400.0 / self.resolution) # Ищем безопасную точку в радиусе 400 пикселей
         
         while queue:
             cx, cy = queue.pop(0)
@@ -198,7 +195,6 @@ class PathPlanner(Node):
         return neighbors
 
     def plan_path(self):
-        # Используем УЖЕ ПРОВЕРЕННЫЕ зафиксированные target_x и target_y
         start_gx, start_gy = self.world_to_grid(self.current_pose.x, self.current_pose.y)
         goal_gx, goal_gy = self.world_to_grid(self.target_x, self.target_y)
         
@@ -216,7 +212,6 @@ class PathPlanner(Node):
             
             if current == goal_node:
                 path = []
-                # Эта точка теперь всегда валидна
                 path.append((self.target_x, self.target_y))
                 current = current.parent
                 
@@ -248,11 +243,7 @@ class PathPlanner(Node):
         return None 
 
     def plan_loop(self):
-        state_msg = String()
-
         if not self.current_pose or not self.goal_pose:
-            state_msg.data = "done"
-            self.pub_state.publish(state_msg)
             return
 
         # Фиксируем точку ОДИН РАЗ и сразу проверяем на препятствия
@@ -279,23 +270,6 @@ class PathPlanner(Node):
             self.target_x = tx
             self.target_y = ty
             self.target_calculated = True
-
-        # Считаем расстояние до валидной, зафиксированной точки
-        dist_to_target = math.hypot(self.target_x - self.current_pose.x, self.target_y - self.current_pose.y)
-
-        # Проверяем прибытие
-        if dist_to_target <= self.goal_tolerance:
-            state_msg.data = "done"
-            self.pub_state.publish(state_msg)
-            
-            self.get_logger().info("Target reached! Waiting for new task.")
-            self.goal_pose = None
-            self.target_calculated = False # Готовимся к следующей цели
-            
-            return 
-        
-        state_msg.data = "in work"
-        self.pub_state.publish(state_msg)
 
         path_points = self.plan_path()
         

@@ -1,189 +1,341 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, Pose2D, PoseArray
-from nav_msgs.msg import Path
 import math
 import numpy as np
-import time
 
-# States
-STATE_IDLE = 0
-STATE_FOLLOW = 1
-STATE_RECOVER_BACK = 2
-STATE_RECOVER_TURN = 3
-STATE_RECOVER_PUSH = 4
+from geometry_msgs.msg import Pose2D, Twist, TransformStamped, PoseStamped  # Добавлен PoseStamped
+from nav_msgs.msg import Path
+from visualization_msgs.msg import Marker
+from std_msgs.msg import ColorRGBA, Bool
+from tf2_ros import TransformBroadcaster
 
-class PathFollower(Node):
+
+# --- Config & helpers ---------------------------------------------------------
+
+class FollowerConfig:
     def __init__(self):
-        super().__init__('path_follower')
-        
-        self.current_pose = None
-        self.enemy_pose = None
-        self.path = []
-        self.obstacles = []
-        
-        # State
-        self.state = STATE_IDLE
-        self.recovery_start_time = 0.0
-        
-        # Recovery params
-        self.stuck_check_time = 0.0
-        self.last_moving_pose = None
-        self.stuck_timeout = 2.0 # If not moved far in 2s while trying to, trigger recovery
-        
-        # Subs/Pubs
-        self.sub_pose = self.create_subscription(Pose2D, '/robot/pose', self.pose_cb, 10)
-        self.sub_path = self.create_subscription(Path, '/path', self.path_cb, 10)
-        self.sub_obs = self.create_subscription(PoseArray, '/obstacles', self.obs_cb, 10)
-        self.sub_enemy = self.create_subscription(Pose2D, '/enemy/pose', self.enemy_cb, 10)
-        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
-        
-        self.timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Path Follower Started.")
+        # Timing
+        self.dt = 0.1  # уменьшил для более плавного управления
 
-    def pose_cb(self, msg): self.current_pose = msg
-    def obs_cb(self, msg): self.obstacles = msg.poses
-    def enemy_cb(self, msg): self.enemy_pose = msg
-    def path_cb(self, msg):
-        self.path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
-        if self.path:
-            self.state = STATE_FOLLOW
-            self.last_moving_pose = self.current_pose
-            self.stuck_check_time = time.time()
+        # Angular PID (from your original)
+        self.kp_angular = -0.3
+        self.ki_angular = -0.05
+        self.kd_angular = -0.2
+        self.max_yaw_rate = 50.0 * math.pi / 180.0
 
-    def stop(self):
-        self.pub_cmd.publish(Twist())
+        # Linear motion
+        self.base_linear_speed = 0.4
 
-    def check_enemy_safety(self):
-        if not self.current_pose or not self.enemy_pose: return True
-        dist = math.hypot(self.current_pose.x - self.enemy_pose.x, 
-                          self.current_pose.y - self.enemy_pose.y)
-        if dist < 0.35: # Too close!
-            return False
-        return True
+        # Lookahead & stopping
+        self.lookahead_distance = 20      # точка «вперёд» на пути
+        self.goal_tolerance = 15         # увеличил для практичности [m]
+        self.yaw_tolerance = math.radians(8)  # [rad]
 
-    def check_stuck_condition(self):
-        # If trying to follow but not moving
-        if self.state == STATE_FOLLOW and self.current_pose and self.last_moving_pose:
-            dist_moved = math.hypot(self.current_pose.x - self.last_moving_pose.x,
-                                    self.current_pose.y - self.last_moving_pose.y)
-            
-            if dist_moved > 0.1:
-                # Reset stuck timer if moved enough
-                self.last_moving_pose = self.current_pose
-                self.stuck_check_time = time.time()
-            elif (time.time() - self.stuck_check_time) > self.stuck_timeout:
-                return True
-        return False
-        
-    def get_cmd_for_follow(self):
-        if not self.path or not self.current_pose: return Twist()
-        
-        # Lookahead
-        lookahead = 0.3
-        target = self.path[-1]
-        
-        for pt in self.path:
-            d = math.hypot(pt[0] - self.current_pose.x, pt[1] - self.current_pose.y)
-            if d > lookahead:
-                target = pt
-                break
-                
-        dx = target[0] - self.current_pose.x
-        dy = target[1] - self.current_pose.y
-        target_angle = math.atan2(dy, dx)
-        
-        angle_diff = target_angle - self.current_pose.theta
-        while angle_diff > math.pi: angle_diff -= 2*math.pi
-        while angle_diff < -math.pi: angle_diff += 2*math.pi
-        
-        cmd = Twist()
-        if abs(angle_diff) > 0.5:
-            cmd.angular.z = 1.5 * np.sign(angle_diff)
-        else:
-            cmd.angular.z = 2.0 * angle_diff
-            cmd.linear.x = 0.4
-            
-        # Check if reached goal (end of path)
-        end_pt = self.path[-1]
-        d_end = math.hypot(end_pt[0] - self.current_pose.x, end_pt[1] - self.current_pose.y)
-        if d_end < 0.1:
-            cmd = Twist() # Stop
-            
-        return cmd
 
-    def control_loop(self):
-        if not self.current_pose: return
+def euler_from_quaternion(q):
+    x, y, z, w = q.x, q.y, q.z, q.w
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return yaw
 
-        # Safety Override
-        if not self.check_enemy_safety():
-            self.get_logger().warn("Enemy too close! Emergency Stop.")
-            self.stop()
-            self.state = STATE_IDLE # Reset state or wait?
+
+def normalize_angle(a):
+    while a > math.pi:
+        a -= 2.0 * math.pi
+    while a < -math.pi:
+        a += 2.0 * math.pi
+    return a
+
+
+class PIDController:
+    def __init__(self, kp, ki, kd, max_output):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.max_output = max_output
+        self.prev_error = 0.0
+        self.integral = 0.0
+        self.integral_limit = 1.0
+
+    def compute(self, error, dt):
+        self.integral += error * dt
+        self.integral = max(-self.integral_limit, min(self.integral_limit, self.integral))
+        deriv = (error - self.prev_error) / dt if dt > 0.0 else 0.0
+        out = self.kp * error + self.ki * self.integral + self.kd * deriv
+        out = max(-self.max_output, min(self.max_output, out))
+        self.prev_error = error
+        return out
+
+    def reset(self):
+        self.prev_error = 0.0
+        self.integral = 0.0
+
+
+# --- Node ---------------------------------------------------------------------
+
+class PathFollowerPIDNode(Node):
+    def __init__(self):
+        super().__init__('path_follower_pid_node')
+
+        # Declare parameters with default values
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('kp_angular', -0.3),
+                ('ki_angular', -0.05),
+                ('kd_angular', -0.2),
+                ('max_yaw_rate', 50.0),  # degrees/s
+                ('base_linear_speed', 0.3),
+                ('lookahead_distance', 15.0),
+                ('goal_tolerance', 30.0),  # увеличил tolerance
+                ('yaw_tolerance', 5.0),  # degrees
+                ('dt', 0.1)  # уменьшил для более частого обновления
+            ]
+        )
+
+        # Get parameter values
+        kp_angular = self.get_parameter('kp_angular').value
+        ki_angular = self.get_parameter('ki_angular').value
+        kd_angular = self.get_parameter('kd_angular').value
+        max_yaw_rate_deg = self.get_parameter('max_yaw_rate').value
+        base_linear_speed = self.get_parameter('base_linear_speed').value
+        lookahead_distance = self.get_parameter('lookahead_distance').value
+        goal_tolerance = self.get_parameter('goal_tolerance').value
+        yaw_tolerance_deg = self.get_parameter('yaw_tolerance').value
+        dt = self.get_parameter('dt').value
+
+        self.get_logger().info("Path Follower (PID) node started.")
+        self.get_logger().info(f"PID parameters: kp={kp_angular}, ki={ki_angular}, kd={kd_angular}")
+        self.get_logger().info(f"Max yaw rate: {max_yaw_rate_deg} deg/s")
+        self.get_logger().info(f"Lookahead distance: {lookahead_distance}m")
+
+        self.cfg = FollowerConfig()
+
+        # Override config with parameter values
+        self.cfg.kp_angular = kp_angular
+        self.cfg.ki_angular = ki_angular
+        self.cfg.kd_angular = kd_angular
+        self.cfg.max_yaw_rate = max_yaw_rate_deg * math.pi / 180.0  # Convert to rad/s
+        self.cfg.base_linear_speed = base_linear_speed
+        self.cfg.lookahead_distance = lookahead_distance
+        self.cfg.goal_tolerance = goal_tolerance
+        self.cfg.yaw_tolerance = yaw_tolerance_deg * math.pi / 180.0  # Convert to radians
+        self.cfg.dt = dt
+
+        # Robot state: [x, y, yaw]
+        self.state = np.array([0.0, 0.0, 0.0])
+        self.frame_id = 'map'
+
+        # Last received path
+        self.path_msg: Path | None = None
+
+        # Controller
+        self.pid = PIDController(self.cfg.kp_angular, self.cfg.ki_angular,
+                                 self.cfg.kd_angular, self.cfg.max_yaw_rate)
+
+        # TF broadcaster
+        self.tf_broadcaster = TransformBroadcaster(self)
+
+        # Subscriptions - ИСПРАВЛЕНО: используем Pose2D для robot_pose
+        self.pose_sub = self.create_subscription(
+            Pose2D, '/robot/pose', self.pose_cb, 10)  # Изменено на Pose2D
+        self.path_sub = self.create_subscription(
+            Path, '/path', self.path_cb, 10)
+
+        # Publishers - ИСПРАВЛЕНО: используем Twist вместо TwistStamped
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)  # Изменено на Twist
+        self.lookahead_pub = self.create_publisher(Marker, '/lookahead_marker', 10)
+        # ДОБАВЛЕНО: Публикатор для топика goal_reached
+        self.goal_reached_pub = self.create_publisher(Bool, '/goal_reached', 10)
+
+        # Timer
+        self.timer = self.create_timer(self.cfg.dt, self.loop)
+
+        # Logs & flags
+        self._log_counter = 0
+        self._goal_reached = False
+        self._goal_reached_published = False  # Флаг чтобы опубликовать только один раз
+
+    # Callbacks ---------------------------------------------------------------
+
+    def pose_cb(self, msg: Pose2D):  # ИСПРАВЛЕНО: принимаем Pose2D
+        # Прямое использование Pose2D - проще чем PoseStamped
+        self.state[0] = msg.x
+        self.state[1] = msg.y
+        self.state[2] = msg.theta  # theta уже в радианах
+
+        # broadcast TF (<frame_id> -> base_link)
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.frame_id
+        t.child_frame_id = 'base_link'
+        t.transform.translation.x = msg.x
+        t.transform.translation.y = msg.y
+        t.transform.translation.z = 0.0
+
+        # Convert theta to quaternion
+        cy = math.cos(msg.theta * 0.5)
+        sy = math.sin(msg.theta * 0.5)
+        cp = math.cos(0.0)
+        sp = math.sin(0.0)
+        cr = math.cos(0.0)
+        sr = math.sin(0.0)
+
+        t.transform.rotation.x = cy * sp * cr + sy * cp * sr
+        t.transform.rotation.y = sy * cp * cr - cy * sp * sr
+        t.transform.rotation.z = cy * cp * sr - sy * sp * cr
+        t.transform.rotation.w = cy * cp * cr + sy * sp * sr
+
+        self.tf_broadcaster.sendTransform(t)
+
+    def path_cb(self, msg: Path):
+        self.path_msg = msg
+        self._goal_reached = False
+        self._goal_reached_published = False  # Сбрасываем флаг публикации
+        self.pid.reset()
+        self.get_logger().info(f"Received new path with {len(msg.poses)} points")
+
+    # Utilities ---------------------------------------------------------------
+
+    def pick_lookahead(self):
+        """Return (target_pose_stamped, target_index) from path using lookahead distance."""
+        if self.path_msg is None or len(self.path_msg.poses) == 0:
+            return None, None
+
+        poses = self.path_msg.poses
+        rx, ry = float(self.state[0]), float(self.state[1])
+
+        # find closest index
+        dists = [math.hypot(ps.pose.position.x - rx, ps.pose.position.y - ry) for ps in poses]
+        nearest_idx = int(np.argmin(dists))
+
+        # from nearest forward, pick the first beyond lookahead distance
+        for i in range(nearest_idx, len(poses)):
+            d = math.hypot(poses[i].pose.position.x - rx, poses[i].pose.position.y - ry)
+            if d >= self.cfg.lookahead_distance:
+                return poses[i], i
+
+        # path tail: return last pose
+        return poses[-1], len(poses) - 1
+
+    def publish_lookahead_marker(self, target_ps: PoseStamped):
+        m = Marker()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = target_ps.header.frame_id or self.frame_id
+        m.ns = "follower_lookahead"
+        m.id = 0
+        m.type = Marker.SPHERE
+        m.action = Marker.ADD
+        m.pose = target_ps.pose
+        m.scale.x = m.scale.y = m.scale.z = 0.25
+        m.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.9)
+        self.lookahead_pub.publish(m)
+
+    def publish_goal_reached(self):
+        """Публикация сообщения о достижении цели"""
+        if not self._goal_reached_published:
+            goal_msg = Bool()
+            goal_msg.data = True
+            self.goal_reached_pub.publish(goal_msg)
+            self._goal_reached_published = True
+            self.get_logger().info("Goal reached message published to /goal_reached")
+
+    # Control loop ------------------------------------------------------------
+
+    def loop(self):
+        # No path → stop
+        if self.path_msg is None or len(self.path_msg.poses) < 2:
+            self._publish_cmd(0.0, 0.0)
             return
 
-        cmd = Twist()
-        
-        # State Machine
-        if self.state == STATE_FOLLOW:
-            if self.check_stuck_condition():
-                self.get_logger().warn("Stuck detected! Starting Recovery: BACK UP")
-                self.state = STATE_RECOVER_BACK
-                self.recovery_start_time = time.time()
-            else:
-                cmd = self.get_cmd_for_follow()
-                
-        elif self.state == STATE_RECOVER_BACK:
-            # Move back for 1.5s
-            if (time.time() - self.recovery_start_time) < 1.5:
-                cmd.linear.x = -0.2
-            else:
-                # Transition to Turn
-                self.state = STATE_RECOVER_TURN
-                self.recovery_start_time = time.time()
-                self.get_logger().info("Recovery: TURN")
-                
-        elif self.state == STATE_RECOVER_TURN:
-            # Turn for 1.0s
-            if (time.time() - self.recovery_start_time) < 1.0:
-                cmd.angular.z = 1.0
-            else:
-                # Try following again or escalate to Push
-                # Let's escalate to push if we still haven't cleared the issue?
-                # Actually, simpler to try Pushing now as "last resort" implies trying other things first.
-                # But here we just assume the sequence Back -> Turn -> Push -> Resume
-                self.state = STATE_RECOVER_PUSH
-                self.recovery_start_time = time.time()
-                self.get_logger().info("Recovery: PUSH (Last Resort)")
-                
-        elif self.state == STATE_RECOVER_PUSH:
-            # Force forward for 1.0s
-            if (time.time() - self.recovery_start_time) < 1.0:
-                cmd.linear.x = 0.5 # Strong push
-            else:
-                # Resume normal operation
-                self.state = STATE_FOLLOW
-                self.last_moving_pose = self.current_pose
-                self.stuck_check_time = time.time()
-                self.get_logger().info("Recovery Complete. Resuming Follow.")
-                
-        elif self.state == STATE_IDLE:
-            # Do nothing, wait for path
-            pass
+        # Goal check (distance to final waypoint)
+        last = self.path_msg.poses[-1]
+        dist_to_goal = math.hypot(last.pose.position.x - self.state[0],
+                                  last.pose.position.y - self.state[1])
 
-        self.pub_cmd.publish(cmd)
+        # ДОБАВЛЕНО: Публикация достижения цели
+        if dist_to_goal < self.cfg.goal_tolerance:
+            # close enough → full stop
+            self._publish_cmd(0.0, 0.0)
+            if not self._goal_reached:
+                self.get_logger().info("Goal reached: stopping.")
+                self._goal_reached = True
+                self.publish_goal_reached()  # Публикуем сообщение о достижении цели
+            else:
+                # Публикуем сообщение каждые 10 циклов, пока робот у цели
+                if self._log_counter % 10 == 0:
+                    goal_msg = Bool()
+                    goal_msg.data = True
+                    self.goal_reached_pub.publish(goal_msg)
+            return
+        else:
+            # Если робот отошел от цели (например, получил новый путь), сбрасываем флаги
+            if self._goal_reached:
+                self._goal_reached = False
+                self._goal_reached_published = False
+                goal_msg = Bool()
+                goal_msg.data = False
+                self.goal_reached_pub.publish(goal_msg)
+                self.get_logger().info("New goal received or robot moved away from goal")
+
+        # Choose lookahead target on the path
+        target_ps, idx = self.pick_lookahead()
+        if target_ps is None:
+            self._publish_cmd(0.0, 0.0)
+            return
+
+        self.publish_lookahead_marker(target_ps)
+
+        # Heading error to lookahead
+        dx = target_ps.pose.position.x - self.state[0]
+        dy = target_ps.pose.position.y - self.state[1]
+        desired_yaw = math.atan2(dy, dx)
+        angle_error = normalize_angle(desired_yaw - self.state[2])
+
+        # PID → angular velocity
+        omega_cmd = self.pid.compute(angle_error, self.cfg.dt)
+
+        # Linear speed: base with mild slowdown if heading error large / near goal
+        dist_to_target = math.hypot(dx, dy)
+
+        # Slow down when turning sharply
+        slow_by_angle = max(0.25, 1.0 - min(abs(angle_error), math.pi/2) / (math.pi/2))
+
+        # Slow down when approaching goal
+        slow_by_dist = min(1.0, dist_to_target / (2.0 * self.cfg.lookahead_distance))
+
+        v_cmd = self.cfg.base_linear_speed * slow_by_angle * max(0.3, slow_by_dist)
+
+        # Publish
+        self._publish_cmd(v_cmd, omega_cmd)
+
+        # Optional compact logging
+        self._log_counter += 1
+        if self._log_counter % 10 == 0:
+            self.get_logger().info(
+                f"Follow: target_idx={idx} dist={dist_to_target:.2f}m "
+                f"yaw_err={math.degrees(angle_error):.1f}deg v={v_cmd:.2f} m/s ω={omega_cmd:.2f} rad/s"
+            )
+
+    def _publish_cmd(self, v, omega):
+        # ИСПРАВЛЕНО: публикуем Twist вместо TwistStamped
+        twist = Twist()
+        twist.linear.x = float(v)
+        twist.angular.z = float(omega)
+        self.cmd_pub.publish(twist)
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PathFollower()
+    node = PathFollowerPIDNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
