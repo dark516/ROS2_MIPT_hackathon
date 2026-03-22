@@ -2,12 +2,10 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose2D, PoseArray
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
 import math
 
 # Константы
-BASE_X = 1.110460251046025
-BASE_Y = 1.6064853556485355
 ENEMY_SAFETY_DISTANCE = 0.35
 
 class BehaviourServer(Node):
@@ -22,14 +20,20 @@ class BehaviourServer(Node):
         self.robot_pose_sub = self.create_subscription(Pose2D, '/robot/pose', self.robot_pose_callback, 10)
         self.obstacles_sub = self.create_subscription(PoseArray, '/obstacles', self.obstacles_callback, 10)
         self.enemy_pose_sub = self.create_subscription(Pose2D, '/enemy/pose', self.enemy_pose_callback, 10)
-        self.state_sub = self.create_subscription(String, '/state', self.state_callback, 10)
+        self.base_pose_sub = self.create_subscription(Pose2D, '/base', self.base_pose_callback, 10)
+        
+        # Подписчик на статус достижения цели
+        self.goal_reached_sub = self.create_subscription(Bool, '/goal_reached', self.goal_reached_callback, 10)
         
         # Переменные состояния
         self.current_robot_pose = None
         self.current_obstacles = []
         self.enemy_pose = None
-        self.robot_move_state = "idle"
-        self.move_completed_event = False
+        self.base_pose = None
+        
+        # События от фолловера
+        self.has_new_goal_event = False
+        self.last_goal_event_value = False
         
         # State Machine
         self.sm_state = "INIT"
@@ -49,13 +53,13 @@ class BehaviourServer(Node):
     def enemy_pose_callback(self, msg):
         self.enemy_pose = msg
 
-    def state_callback(self, msg):
-        prev_state = self.robot_move_state
-        self.robot_move_state = msg.data
-        
-        # Фиксируем успешное завершение движения (переход из in work в done)
-        if prev_state == "in work" and self.robot_move_state == "done":
-            self.move_completed_event = True
+    def base_pose_callback(self, msg):
+        self.base_pose = msg
+
+    def goal_reached_callback(self, msg):
+        # Просто фиксируем последнее пришедшее сообщение
+        self.last_goal_event_value = msg.data
+        self.has_new_goal_event = True
 
     def find_nearest_object(self):
         if not self.current_robot_pose or not self.current_obstacles:
@@ -99,18 +103,29 @@ class BehaviourServer(Node):
             if nearest_obj:
                 self.get_logger().info(f"Нашел объект: x={nearest_obj['x']:.2f}, y={nearest_obj['y']:.2f}")
                 
+                # Очищаем очередь событий перед отправкой команды
+                self.has_new_goal_event = False
+                
                 # Отправляем цель
                 goal_msg = Pose2D(x=nearest_obj['x'], y=nearest_obj['y'], theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
-                # Сбрасываем флаг движения и переходим к ожиданию
-                self.move_completed_event = False
-                self.sm_state = "MOVING_TO_OBJ"
+                # Переходим в режим ОЖИДАНИЯ ПУТИ
+                self.sm_state = "WAIT_PATH_OBJ"
             else:
                 self.get_logger().info("Объекты не найдены. Жду...", throttle_duration_sec=3.0)
 
+        elif self.sm_state == "WAIT_PATH_OBJ":
+            # Ждем ТОЛЬКО False (фолловер получил путь и начал движение)
+            if self.has_new_goal_event and not self.last_goal_event_value:
+                self.has_new_goal_event = False # Сбрасываем событие
+                self.get_logger().info("Путь до объекта построен. Едем!")
+                self.sm_state = "MOVING_TO_OBJ"
+
         elif self.sm_state == "MOVING_TO_OBJ":
-            if self.move_completed_event:
+            # Ждем ТОЛЬКО True (фолловер приехал на место)
+            if self.has_new_goal_event and self.last_goal_event_value:
+                self.has_new_goal_event = False # Сбрасываем событие
                 self.get_logger().info("Доехал до объекта. Хватаю!")
                 self.arm_pub.publish(Bool(data=False)) # Схватить (закрыть манипулятор)
                 self.wait_start_time = self.get_clock().now()
@@ -120,17 +135,33 @@ class BehaviourServer(Node):
             # Ждем полсекунды
             elapsed = (self.get_clock().now() - self.wait_start_time).nanoseconds / 1e9
             if elapsed >= 0.5:
-                self.get_logger().info("Объект схвачен. Везем на базу.")
+                if not self.base_pose:
+                    self.get_logger().warn("Координаты базы еще не получены! Жду топик /base.", throttle_duration_sec=2.0)
+                    return
+                
+                self.get_logger().info(f"Объект схвачен. Везем на базу ({self.base_pose.x:.2f}, {self.base_pose.y:.2f}).")
+                
+                # Очищаем очередь событий перед отправкой команды
+                self.has_new_goal_event = False
                 
                 # Отправляем цель на базу
-                goal_msg = Pose2D(x=BASE_X, y=BASE_Y, theta=0.0)
+                goal_msg = Pose2D(x=self.base_pose.x, y=self.base_pose.y, theta=0.0)
                 self.goal_pub.publish(goal_msg)
                 
-                self.move_completed_event = False
+                # Переходим в режим ОЖИДАНИЯ ПУТИ
+                self.sm_state = "WAIT_PATH_BASE"
+
+        elif self.sm_state == "WAIT_PATH_BASE":
+            # Ждем ТОЛЬКО False
+            if self.has_new_goal_event and not self.last_goal_event_value:
+                self.has_new_goal_event = False
+                self.get_logger().info("Путь до базы построен. Едем!")
                 self.sm_state = "MOVING_TO_BASE"
 
         elif self.sm_state == "MOVING_TO_BASE":
-            if self.move_completed_event:
+            # Ждем ТОЛЬКО True
+            if self.has_new_goal_event and self.last_goal_event_value:
+                self.has_new_goal_event = False
                 self.get_logger().info("Прибыл на базу. Выбрасываю объект!")
                 self.arm_pub.publish(Bool(data=True)) # Бросить (открыть манипулятор)
                 self.wait_start_time = self.get_clock().now()

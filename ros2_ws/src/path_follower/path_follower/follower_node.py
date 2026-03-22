@@ -28,7 +28,7 @@ class FollowerConfig:
 
         # Lookahead & stopping
         self.lookahead_distance = 20      # точка «вперёд» на пути
-        self.goal_tolerance = 15         # увеличил для практичности [m]
+        self.goal_tolerance = 25         # увеличил для практичности [m]
         self.yaw_tolerance = math.radians(8)  # [rad]
 
 
@@ -262,12 +262,6 @@ class PathFollowerPIDNode(Node):
                 self.get_logger().info("Goal reached: stopping.")
                 self._goal_reached = True
                 self.publish_goal_reached()  # Публикуем сообщение о достижении цели
-            else:
-                # Публикуем сообщение каждые 10 циклов, пока робот у цели
-                if self._log_counter % 10 == 0:
-                    goal_msg = Bool()
-                    goal_msg.data = True
-                    self.goal_reached_pub.publish(goal_msg)
             return
         else:
             # Если робот отошел от цели (например, получил новый путь), сбрасываем флаги
