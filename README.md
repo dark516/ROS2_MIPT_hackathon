@@ -59,7 +59,7 @@
          alt="rounded-in-photoretrica"
          style="width: 70%; max-width: 400px; height: auto;">
 </div>
-
+<div align="center" style="text-align: center;">
 <div style="display: flex; gap: 20px; justify-content: center; width: 100%;">
     <img src="https://github.com/user-attachments/assets/4e7c5d74-d18b-485f-8203-c4f3c05cc5ea" 
          alt="rounded-in-photoretrica" 
@@ -68,5 +68,6 @@
          alt="rounded-in-photoretrica" 
          style="width: 300px; height: auto;">
 </div>
+<div align="left" style="text-align: left;">
 
 ROS2 MIPT hackathon on Frob robot
