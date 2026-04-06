@@ -20,10 +20,10 @@
 <div style="display: flex; gap: 20px; justify-content: center; width: 100%;">
     <img src="https://github.com/user-attachments/assets/14354e3f-47b0-48cf-b7ea-0fe8addc32a4" 
          alt="rounded-in-photoretrica" 
-         style="width: 500px; height: auto;">
+         style="width: 400px; height: auto;">
     <img src="https://github.com/user-attachments/assets/2561cc66-e388-498a-95b4-dc725fc8aa20" 
          alt="rounded-in-photoretrica" 
-         style="width: 423px; height: auto;">
+         style="width: 323px; height: auto;">
 </div>
 <div align="left" style="text-align: left;">
 
@@ -63,10 +63,10 @@
 <div style="display: flex; gap: 20px; justify-content: center; width: 100%;">
     <img src="https://github.com/user-attachments/assets/4e7c5d74-d18b-485f-8203-c4f3c05cc5ea" 
          alt="rounded-in-photoretrica" 
-         style="width: 500px; height: auto;">
+         style="width: 300px; height: auto;">
     <img src="https://github.com/user-attachments/assets/02e5ffde-c717-467d-b0b5-ae9ad56a1dfb" 
          alt="rounded-in-photoretrica" 
-         style="width: 500px; height: auto;">
+         style="width: 300px; height: auto;">
 </div>
 
 ROS2 MIPT hackathon on Frob robot
