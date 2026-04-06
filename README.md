@@ -63,11 +63,19 @@
 <div style="display: flex; gap: 20px; justify-content: center; width: 100%;">
     <img src="https://github.com/user-attachments/assets/4e7c5d74-d18b-485f-8203-c4f3c05cc5ea" 
          alt="rounded-in-photoretrica" 
-         style="width: 300px; height: auto;">
+         style="width: 400px; height: auto;">
     <img src="https://github.com/user-attachments/assets/02e5ffde-c717-467d-b0b5-ae9ad56a1dfb" 
          alt="rounded-in-photoretrica" 
-         style="width: 300px; height: auto;">
+         style="width: 400px; height: auto;">
 </div>
 <div align="left" style="text-align: left;">
 
+
+# Работа камеры
+
+<div align="center">
+    <img src="https://github.com/user-attachments/assets/97779bf8-f1a0-49d7-8fba-300eef96327c" 
+         alt="rounded-in-photoretrica"
+         style="width: 90%; max-width: 400px; height: auto;">
+</div>
 ROS2 MIPT hackathon on Frob robot
