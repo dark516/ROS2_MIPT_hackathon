@@ -46,9 +46,9 @@
 [![License](https://img.shields.io/github/license/dark516/Frob_robot?style=flat-square)](https://github.com/dark516/Frob_robot/blob/main/LICENSE)
 [![Issues](https://img.shields.io/github/issues/dark516/Frob_robot?style=flat-square)](https://github.com/dark516/Frob_robot/issues)
 
-[Документация проекта](./MANUAL.md)
+[Документация проекта](https://github.com/dark516/Frob_robot/blob/main/MANUAL.md)
 
-[English documentation](./MANUAL.eng.md)
+[English documentation](https://github.com/dark516/Frob_robot/blob/main/MANUAL.eng.md)
 
 <div align="left" style="text-align: left;">
 
