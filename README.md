@@ -1,7 +1,13 @@
 # Решение Хакатон - соренований по сборке и программированию ROS2/open-source роботов от команды just_misis | ROS Meetup '26
-В данном репозитории представлены все файлы решения команды just_misis для Хакатон - соренований по сборке и программированию ROS2/open-source роботов в рамках мероприятия [ROS Meetup '26](https://rosmeetup.ru/)!
+
 <div align="center">
-    <img src="https://github.com/user-attachments/assets/32ba6817-538e-4a81-8f70-bf40a67644a9" alt="rounded-in-photoretrica">
+    <img src="https://github.com/user-attachments/assets/035d7a99-ded4-42b8-a010-f8725f115cb8" alt="rounded-in-photoretrica">
+</div>
+
+В данном репозитории представлены все файлы решения команды just_misis для Хакатон - соренований по сборке и программированию ROS2/open-source роботов в рамках мероприятия [ROS Meetup '26](https://rosmeetup.ru/)!
+
+<div align="center">
+    <img src="https://github.com/user-attachments/assets/0a232da6-bde4-4101-8d46-427e075f8269" alt="rounded-in-photoretrica">
 </div>
 
 # Описание задания хакатона:
